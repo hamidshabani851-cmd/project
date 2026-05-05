@@ -1,15 +1,10 @@
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
-
 export const config = {
-  api: { bodyParser: false },
-  supportsResponseStreaming: true,
-  maxDuration: 60,
+  runtime: "edge",
 };
 
-const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
+const TARGET = "https://goldprice.novix.fyi:2096"; // your VPS inbound port
 
-const STRIP_HEADERS = new Set([
+const STRIP_HEADERS = [
   "host",
   "connection",
   "keep-alive",
@@ -20,60 +15,29 @@ const STRIP_HEADERS = new Set([
   "transfer-encoding",
   "upgrade",
   "forwarded",
+  "x-forwarded-for",
   "x-forwarded-host",
   "x-forwarded-proto",
-  "x-forwarded-port",
-]);
+];
 
-export default async function handler(req, res) {
-  if (!TARGET_BASE) {
-    res.statusCode = 500;
-    return res.end("Misconfigured: TARGET_DOMAIN is not set");
-  }
+export default async function handler(req) {
+  const url = new URL(req.url);
 
-  try {
-    const targetUrl = TARGET_BASE + req.url;
+  const targetUrl = TARGET + url.pathname + url.search;
 
-    const headers = {};
-    let clientIp = null;
-    for (const key of Object.keys(req.headers)) {
-      const k = key.toLowerCase();
-      const v = req.headers[key];
-      if (STRIP_HEADERS.has(k)) continue;
-      if (k.startsWith("x-vercel-")) continue;
-      if (k === "x-real-ip") { clientIp = v; continue; }
-      if (k === "x-forwarded-for") { if (!clientIp) clientIp = v; continue; }
-      headers[k] = Array.isArray(v) ? v.join(", ") : v;
-    }
-    if (clientIp) headers["x-forwarded-for"] = clientIp;
+  const headers = new Headers(req.headers);
 
-    const method = req.method;
-    const hasBody = method !== "GET" && method !== "HEAD";
+  STRIP_HEADERS.forEach(h => headers.delete(h));
 
-    const fetchOpts = { method, headers, redirect: "manual" };
-    if (hasBody) {
-      fetchOpts.body = Readable.toWeb(req);
-      fetchOpts.duplex = "half";
-    }
+  const res = await fetch(targetUrl, {
+    method: req.method,
+    headers,
+    body: req.body,
+    redirect: "manual",
+  });
 
-    const upstream = await fetch(targetUrl, fetchOpts);
-
-    res.statusCode = upstream.status;
-    for (const [k, v] of upstream.headers) {
-      if (k.toLowerCase() === "transfer-encoding") continue;
-      try { res.setHeader(k, v); } catch {}
-    }
-
-    if (upstream.body) {
-      await pipeline(Readable.fromWeb(upstream.body), res);
-    } else {
-      res.end();
-    }
-  } catch (err) {
-    console.error("relay error:", err);
-    if (!res.headersSent) {
-      res.statusCode = 502;
-      res.end("Bad Gateway: Tunnel Failed");
-    }
-  }
+  return new Response(res.body, {
+    status: res.status,
+    headers: res.headers,
+  });
 }
