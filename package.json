@@ -1,0 +1,8 @@
+{
+  "name": "os project",
+  "version": "1.1.0",
+  "type": "module",
+  "description": "operating system professor fazio project",
+  "private": true,
+  "license": "MIT"
+}
